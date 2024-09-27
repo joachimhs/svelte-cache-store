@@ -1,0 +1,42 @@
+{
+  "name": "svelte-cache-store",
+  "version": "0.5.0",
+  "description": "A Svelte store for caching API data compatible with Svelte 4.",
+  "homepage": "https://github.com/joachimhs/svelte-cache-store",
+  "main": "dist/index.cjs.js",
+  "module": "dist/index.esm.js",
+  "types": "dist/index.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joachimhs/svelte-cache-store.git"
+  },
+  "bugs": {
+    "url": "https://github.com/joachimhs/svelte-cache-store/issues"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.esm.js",
+      "require": "./dist/index.cjs.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "svelte",
+    "store",
+    "cache",
+    "svelte4"
+  ],
+  "author": "Joachim Haagen Skeie",
+  "license": "MIT",
+  "devDependencies": {
+    "tsup": "^6.7.0",
+    "typescript": "^4.5.4"
+  }
+}
