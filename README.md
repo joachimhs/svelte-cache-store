@@ -20,7 +20,10 @@ I find myself implementing similar backend APIs when I develop applications. The
 
 # Installation
 
-Currently the code is not publised ot npm yet, it is only available as a single JavaScript file in the src-directory
+```
+npm install svelte-cache-store
+```
+
 
 # Usage
 
@@ -36,9 +39,9 @@ If you are writing a Blog, then you might have two data types - blogPost and blo
 
 ```
 <script>
-import {cacheStore} from "$lib/stores/CacheStore";
+import {cacheStore} from "svelte-cache-store";
 
-cacheStore.registerType('blogPost', 'blogPosts', '/sequel-api/api-route');
+cacheStore.registerType('blogPost', 'blogPosts', '/my-api');
 cacheStore.registerType('blogPostImage', 'blogPostImages', '/my-api');
 </script>
 
@@ -128,10 +131,10 @@ Each data type that CacheStore should handle, needs to be registered. This is ty
 
 ```
 <script>
-import {cacheStore} from "$lib/stores/CacheStore";
+import {cacheStore} from "svelte-cache-store";
 
-cacheStore.registerType('blogPost', 'blogPosts', '/sequel-api/api-route');
-cacheStore.registerType('blogPostImage', 'blogPostImages', '/sequel-api/api-route');
+cacheStore.registerType('blogPost', 'blogPosts', '/my-api');
+cacheStore.registerType('blogPostImage', 'blogPostImages', '/my-api');
 </script>
 
 <slot></slot>
@@ -141,7 +144,7 @@ To fetch, create, update and delete data, this is normally done in the page-comp
 
 ```
 <script>
-    import {cacheStore} from "$lib/stores/CacheStore";
+    import {cacheStore} from "svelte-cache-store";
     import {onMount} from "svelte";
 
     let blogPosts = [];
@@ -179,7 +182,7 @@ When the user navigates to a single blogPost, the blog should be presented, alon
 
 ```
 <script>
-    import {cacheStore} from "$lib/stores/CacheStore";
+    import {cacheStore} from "svelte-cache-store";
     import {onMount} from "svelte";
     import {page} from "$app/stores";
     import Markdown from "$lib/components/Markdown.svelte";
