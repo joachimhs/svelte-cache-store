@@ -35,14 +35,42 @@ Each of the data-types that the CacheStore can handle needs to be registered, so
 - the plural form of the entity to cache
 - the URL prefix that your backend uses
 
-If you are writing a Blog, then you might have two data types - blogPost and blogPostImages. Both of these needs to be registered - typically in src/+layout.svelte:
+If you are writing a Blog, then you might have two data types - BlogPost and BlogPostImages. 
+Both of these needs to be a Typescript type and registered with the store - typically in 
+src/+layout.svelte:
 
+### BlogPost.ts
+
+```typescript
+export interface BlogPost extends CacheItem {
+    title: string;
+    preamble: string;
+    content: string;
+    createdDate: string;
+    username: string;
+    isVisible: boolean;
+    images: string[];
+}
 ```
-<script>
-import {cacheStore} from "svelte-cache-store";
 
-cacheStore.registerType('blogPost', 'blogPosts', '/my-api');
-cacheStore.registerType('blogPostImage', 'blogPostImages', '/my-api');
+### BlogPostImage.ts
+
+```typescript
+export interface BlogPostImage extends CacheItem{
+    imagePath: string;
+    blogPostId: string;
+}
+```
+
+### +layout.svelte
+```sveltehtml
+<script lang="ts">
+import {cacheStore} from "svelte-cache-store";
+import type {BlogPost} from "./BlogPost";
+import type {BlogPostImage} from "./BlogPostImage";
+
+cacheStore.registerType<BlogPost>('blogPost', 'blogPosts', '/my-api');
+cacheStore.registerType<BlogPostImage>('blogPostImage', 'blogPostImages', '/my-api');
 </script>
 
 <slot></slot>
@@ -54,32 +82,79 @@ The code above registeres the types blogPost and blogPostImage with CacheStore. 
 
 Data can be fetched in two ways:
 
-- **fetchAll(singularName)**
-- **fetchById(singularName, id)**
+- **fetchAll<Type>(singularName)**
+- **fetchById<Type>(singularName, id)**
 
-### fetchById(singularName, id)
+### fetchById<Type extends CacheItem>(singularName, id)
 
 This method fetches an item by its ID. If the item is already in the cache, it will be returned immediately; otherwise, it will be fetched from the API. Sideloaded data will be automatically added to the cache.
 
 ```
-let blogPost = await cacheStore.fetchById('blogPost', '123');
+let blogPost : BlogPost = await cacheStore.fetchById<BlogPost>('blogPost', '123');
 ```
 
 The data will be fetched via a GET to **/my-api/blogPosts/123**.
 
-### fetchAll(singularName)
+The return JSON will be something like this:
+
+```json
+{
+  "blogPost": {
+    "id": "123",
+    "title": "My Blog Post",
+    "preamble": "This is a blog post",
+    "content": "This is the content of the blog post",
+    "createdDate": "2021-10-10",
+    "username": "user",
+    "isVisible": true,
+    "images": ["456"]
+  }
+}
+```
+
+### fetchAll<Type extends CacheItem>(singularName)
 
 This method fetches all items of a specific type. If the items are already in the cache, they will be returned immediately; otherwise, they will be fetched from the API. Sideloaded data will be automatically added to the cache.
 
 **sortColumns**: An optional array of sorting criteria.
 
 ```
-let blogPosts = await cacheStore.fetchAll('blogPost', [{ sortColumn: 'createdDate', sortOrder: 'desc' }]);
+let blogPosts : BlogPost[] = await cacheStore.fetchAll<BlogPost>('blogPost', [{ sortColumn: 
+'createdDate', sortOrder: 'desc' }]);
 ```
 
 The data will be fetched via a GET to **/my-api/blogPosts**.
 
-### reloadById(singularName, id)
+The return JSON will be something like this:
+
+```json
+{
+  "blogPosts": [
+    {
+      "id": "123",
+      "title": "My Blog Post",
+      "preamble": "This is a blog post",
+      "content": "This is the content of the blog post",
+      "createdDate": "2021-10-10",
+      "username": "user",
+      "isVisible": true,
+      "images": ["456"]
+    },
+    {
+      "id": "124",
+      "title": "My Second Blog Post",
+      "preamble": "This is a blog post",
+      "content": "This is the content of the blog post",
+      "createdDate": "2021-10-10",
+      "username": "user",
+      "isVisible": true,
+      "images": ["457"]
+    }
+  ]
+}
+```
+
+### reloadById<Type extends CacheItem>(singularName, id)
 
 This method forces a re-fetch of the item from the API, even if it is already in the cache. The updated data will be placed in the cache
 
@@ -87,7 +162,7 @@ This method forces a re-fetch of the item from the API, even if it is already in
 let refreshedBlogPost = await cacheStore.reloadById('blogPost', '123');
 ```
 
-### reloadAll(singularName)
+### reloadAll<Type extends CacheItem>(singularName)
 
 This method forces a re-fetch of all items from the API, even if they are already in the cache. The updated data will be placed in the cache
 
@@ -95,22 +170,22 @@ This method forces a re-fetch of all items from the API, even if they are alread
 let refreshedBlogPosts = await cacheStore.reloadAll('blogPost', [{ sortColumn: 'createdDate', sortOrder: 'desc' }]);
 ```
 
-### create(singularName, object)
+### create<Type extends CacheItem>(singularName, object)
 
 This method creates a new item via the API and adds it to the cache.
 
 ```
-await cacheStore.create('blogPost', myBlogPost);
+let blogPost : BlogPost = await cacheStore.create('blogPost', myBlogPost);
 ```
 
 The data will be stored via a POST to **/my-api/blogPosts**.
 
-### update(singualrName, id, object)
+### update<Type extends CacheItem>(singualrName, id, object)
 
 This method updates an item by its ID via the API and updates the cache with the new data.
 
 ```
-await cacheStore.update('blogPost', '123', myBlogPost);
+blogPost = await cacheStore.update('blogPost', '123', myBlogPost);
 ```
 
 The data will be fetched via a PUT to **/my-api/blogPost/123s**.
@@ -129,12 +204,14 @@ The data will be deleted via a DELETE to **/my-api/blogPosts/123**.
 
 Each data type that CacheStore should handle, needs to be registered. This is typically done application-wide in src/+layout.svelte:
 
-```
+```javascript
 <script>
 import {cacheStore} from "svelte-cache-store";
-
-cacheStore.registerType('blogPost', 'blogPosts', '/my-api');
-cacheStore.registerType('blogPostImage', 'blogPostImages', '/my-api');
+import type {BlogPost} from "./BlogPost";
+import type {BlogPostImage} from "./BlogPostImage";
+    
+cacheStore.registerType<BlogPost>('blogPost', 'blogPosts', '/my-api');
+cacheStore.registerType<BlogPostImage>('blogPostImage', 'blogPostImages', '/my-api');
 </script>
 
 <slot></slot>
@@ -147,10 +224,11 @@ To fetch, create, update and delete data, this is normally done in the page-comp
     import {cacheStore} from "svelte-cache-store";
     import {onMount} from "svelte";
 
-    let blogPosts = [];
+    let blogPosts : BlogPost[] = [];
     onMount(async () => {
         // Fetch all blog posts, sorted by 'createdDate' in descending order
-        const result = await cacheStore.fetchAll('blogPost', [{ sort: 'createdDate', order: 'desc' }]);
+        const result = await cacheStore.fetchAll<BlogPost>('blogPost', [{ sort: 'createdDate', 
+        order: 'desc' }]);
 
         // Filter the blog posts to include only those where data.isVisible is true
         blogPosts = result.filter(post => post.data && post.data.isVisible);
@@ -167,38 +245,43 @@ To fetch, create, update and delete data, this is normally done in the page-comp
     <p>No blog posts found.</p>
 {:else}
     <ul>
-        {#each blogPosts as { data, state, errorMessage } (data?.id)}
+        {#each blogPosts as blogPost}
             <li>
-                <a href={`/blogPost/${data.id}`}>{data.title}</a>
+                <a href={`/blogPost/${blogPost.id}`}>{blogPost.title}</a>
             </li>
         {/each}
     </ul>
 {/if}
 ```
 
-From the cache, all data related to the record lives in the *data*-property, while the state (loading, updating, deleting, loaded, error) is kept in the state-property. If any error message is received while fetching data from the backend, it can be found in the *errorMessage*-property.
+From the cache, the items state (loading, updating, deleting, loaded, error) is kept in 
+the state-property. If any error message is received while fetching data from the backend, 
+it can be found in the *errorMessage*-property.
 
-When the user navigates to a single blogPost, the blog should be presented, along with any images that belong to the blogPost, in /src/routes/blogPost/[blogId]/+page.svelte:
+When the user navigates to a single blogPost, the blog should be presented, along with any images 
+that belong to the blogPost, in /src/routes/blogPost/[blogId]/+page.svelte:
 
-```
-<script>
+```sveltehtml
+<script lang="ts">
     import {cacheStore} from "svelte-cache-store";
     import {onMount} from "svelte";
     import {page} from "$app/stores";
     import Markdown from "$lib/components/Markdown.svelte";
-
-    let blogPost;
-    let blogImages = [];
+    import type {BlogPost} from "$lib/models/BlogPost";
+    import type {BlogPostImage} from "$lib/models/BlogPostImage";
+    
+    let blogPost : BlogPost;
+    let blogImages : BlogPost[] = [];
     onMount(async () => {
-        blogPost = await cacheStore.fetchById('blogPost', $page.params.id);
-        if (blogPost.state === 'loaded' && blogPost.data.images) {
-            for (const image of blogPost.data.images) {
-                let img = await cacheStore.fetchById('blogPostImage', image);
+        blogPost = await cacheStore.fetchById<BlogPost>('blogPost', $page.params.id);
+        if (blogPost.state === 'loaded' && blogPost.images) {
+            for (const image of blogPost.images) {
+                let img : BlogPostImage = await cacheStore.fetchById<BlogPostImage>
+    ('blogPostImage', image);
                 console.log(img);
                 blogImages = [...blogImages, img];
             }
         }
-        console.log(JSON.stringify(blogPost));
     });
 
 </script>
@@ -208,16 +291,16 @@ When the user navigates to a single blogPost, the blog should be presented, alon
 {#if blogPost?.state === 'error'}
     <p style="color: red;">Error: {blogPost.errorMessage || 'Unknown error'}</p>
 {:else if blogPost?.state === 'loaded'}
-    <h1>{blogPost.data.title}</h1>
+    <h1>{blogPost.title}</h1>
 
     {#each blogImages as image}
-        <img src={image.data.imagePath} />
+        <img src={image.imagePath} />
     {/each}
-    <p>Created by {blogPost.data.username} on {blogPost.data.createdDate}</p>
+    <p>Created by {blogPost.username} on {blogPost.createdDate}</p>
 
-    <p>{blogPost.data.preamble}</p>
+    <p>{blogPost.preamble}</p>
 
-    <p><Markdown toHtml={blogPost.data.content} /></p>
+    <p><Markdown toHtml={blogPost.content} /></p>
 {:else if blogPost?.state === 'loading'}
     <p>Loading...</p>
 {/if}

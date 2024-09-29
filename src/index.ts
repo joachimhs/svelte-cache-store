@@ -1,9 +1,29 @@
 import { writable, get } from 'svelte/store';
 
-type CacheState = 'loading' | 'loaded' | 'updating' | 'deleting' | 'error';
+/**
+ * This type represents the state of an item in the cache store. The state can be one of the following:
+ * - 'loading': The item is being fetched from the backend.
+ * - 'loaded': The item has been successfully fetched from the backend.
+ * - 'updating': The item is being updated on the backend.
+ * - 'deleting': The item is being deleted from the backend.
+ * - 'error': An error occurred while fetching, updating, or deleting the item.
+ */
+export type CacheState = 'loading' | 'loaded' | 'updating' | 'deleting' | 'error';
 
-interface CacheItem<T> {
-    data: T | null;
+/**
+ * This interface represents the base structure of an item in the cache store. Any item that is stored in the cache
+ * store must implement this interface. It enforces that each item has a unique ID from the backend, and adds a state
+ * property to track the state of the item (loading, loaded, updating, deleting, or error). The error property is a
+ * boolean that indicates whether an error occurred while fetching, updating, or deleting the item. The errorMessage
+ * property contains the error message if an error occurred, or null if no error occurred.
+ *
+ * @param id - The unique ID of the item.
+ * @param state - The state of the item (loading, loaded, updating, deleting, or error).
+ * @param error - A boolean indicating whether an error occurred while fetching, updating, or deleting the item.
+ * @param errorMessage - The error message if an error occurred, or null if no error occurred.
+ */
+export interface CacheItem {
+    id: string;
     state: CacheState;
     error: boolean;
     errorMessage: string | null;
@@ -14,8 +34,8 @@ interface SortColumn {
     sortOrder?: 'ascending' | 'asc' | 'descending' | 'desc';
 }
 
-interface CacheRegistry {
-    cache: any;
+interface CacheRegistry<T extends CacheItem> {
+    cache: ReturnType<typeof writable<{ [id: string]: T }>>;
     singularName: string;
     pluralName: string;
     apiPrefix: string;
@@ -24,7 +44,12 @@ interface CacheRegistry {
 
 // Type guard to check if the error is an instance of Error
 function isErrorWithMessage(error: unknown): error is { message: string } {
-    return typeof error === 'object' && error !== null && 'message' in error && typeof (error as any).message === 'string';
+    return (
+        typeof error === 'object' &&
+        error !== null &&
+        'message' in error &&
+        typeof (error as any).message === 'string'
+    );
 }
 
 export let cacheStore = createCacheStore();
@@ -34,7 +59,7 @@ export let cacheStore = createCacheStore();
  * simple-json-api specification
  */
 function createCacheStore() {
-    const registry = new Map<string, CacheRegistry>();
+    const registry = new Map<string, CacheRegistry<any>>();
 
     /**
      * Register a type in the cache store. The type must be registered before any operations can be performed on it.
@@ -42,13 +67,27 @@ function createCacheStore() {
      * @param pluralName
      * @param apiPrefix
      */
-    function registerType<T>(singularName: string, pluralName: string, apiPrefix: string) {
-        const cache = writable<{ [id: string]: CacheItem<T> }>({});
-        registry.set(singularName, { cache, singularName, pluralName, apiPrefix, hasFetchedAll: false });
+    function registerType<T extends CacheItem>(singularName: string, pluralName: string, apiPrefix: string) {
+        const cache = writable<{ [id: string]: T }>({});
+        registry.set(singularName, {
+            cache,
+            singularName,
+            pluralName,
+            apiPrefix,
+            hasFetchedAll: false,
+        } as CacheRegistry<T>);
     }
 
-    function getCache(typeName: string) {
-        return registry.get(typeName)?.cache;
+    /**
+     * Get the cached items for a specific type.
+     * @param singularName
+     */
+    function getCache<T extends CacheItem>(singularName: string) {
+        const registryEntry = registry.get(singularName) as CacheRegistry<T>;
+        if (!registryEntry) {
+            throw new Error(`Type ${singularName} is not registered in the cache store.`);
+        }
+        return registryEntry.cache;
     }
 
     /**
@@ -75,27 +114,27 @@ function createCacheStore() {
     }
 
     /**
-     * Fetch an item by its ID. If the item is not in the cache, it will be fetched from the API via the provided
-     * apiPrefix. An object with the id and status set to 'loading'  will be returned synchronously,
-     * and the data will be fetched asynchronously.
-     *
-     * If the item is already in the cache, the cached value will be returned synchronously.
-     *
-     * Any side-loaded data will be added to the cache if it is not already present, given that the side-loaded data
-     * is registered in the cache registry.
+     * Fetch an item by its ID.
      * @param singularName
      * @param id
      */
-    async function fetchById<T>(singularName: string, id: string): Promise<CacheItem<T>> {
-        const typeRegistry : CacheRegistry | undefined = registry.get(singularName);
-        if (!typeRegistry) throw new Error(`Type ${singularName} is not registered in the cache store.`);
+    async function fetchById<T extends CacheItem>(singularName: string, id: string): Promise<T> {
+        const typeRegistry = registry.get(singularName) as CacheRegistry<T>;
+        if (!typeRegistry)
+            throw new Error(`Type ${singularName} is not registered in the cache store.`);
 
         const { cache, pluralName, apiPrefix } = typeRegistry;
-        // @ts-ignore
-        let cacheValue = get(cache)[id];
 
+        let cacheValue = (get(cache) as { [key: string]: T })[id];
+
+        // If the item is not in the cache or is in an error state, fetch it from the backend
         if (!cacheValue || (cacheValue != null && cacheValue.state === 'error')) {
-            cacheValue = { data: null, state: 'loading', error: false, errorMessage: null };
+            cacheValue = {
+                id,
+                state: 'loading',
+                error: false,
+                errorMessage: null,
+            } as T;
             cache.update((current: any) => ({ ...current, [id]: cacheValue }));
 
             try {
@@ -104,8 +143,14 @@ function createCacheStore() {
 
                 const json = await response.json();
                 handleSideLoading(singularName, pluralName, json);
-                cacheValue = { data: json[singularName], state: 'loaded', error: false, errorMessage: null };
-                cache.update((current: any) => ({ ...current, [id]: cacheValue }));
+
+                const data = json[singularName] as T;
+                data.state = 'loaded';
+                data.error = false;
+                data.errorMessage = null;
+
+                cache.update((current: any) => ({ ...current, [id]: data }));
+                cacheValue = data;
             } catch (error) {
                 let errorMessage = 'An unknown error occurred';
                 if (isErrorWithMessage(error)) {
@@ -113,7 +158,7 @@ function createCacheStore() {
                 }
                 cache.update((current: any) => ({
                     ...current,
-                    [id]: { ...cacheValue, state: 'error', error: true, errorMessage }
+                    [id]: { ...cacheValue, state: 'error', error: true, errorMessage },
                 }));
                 console.error(`Failed to fetch ${id}:`, errorMessage);
             }
@@ -123,25 +168,20 @@ function createCacheStore() {
     }
 
     /**
-     * Fetch all items of a specific type. If the items are not in the cache, they will be fetched from the API via the
-     * provided apiPrefix. An empty array will be returned synchronously, and the data will be fetched asynchronously.
-     *
-     * If the items are already in the cache, the cached values will be returned synchronously.
-     *
-     * Any side-loaded data will be added to the cache if it is not already present, given that the side-loaded data
-     * is registered in the cache registry.
+     * Fetch all items of a specific type.
      * @param singularName
      * @param sortColumns
      */
-    async function fetchAll<T>(singularName: string, sortColumns?: SortColumn[]): Promise<CacheItem<T>[]> {
-        const typeRegistry: CacheRegistry | undefined = registry.get(singularName);
-        if (!typeRegistry) throw new Error(`Type ${singularName} is not registered in the cache store.`);
+    async function fetchAll<T extends CacheItem>(singularName: string, sortColumns?: SortColumn[]): Promise<T[]> {
+        const typeRegistry = registry.get(singularName) as CacheRegistry<T>;
+        if (!typeRegistry)
+            throw new Error(`Type ${singularName} is not registered in the cache store.`);
 
         const { cache, pluralName, apiPrefix, hasFetchedAll } = typeRegistry;
-        let cacheValue = get(cache);
+        let cacheValue = get(cache) as { [key: string]: T };
 
+        //Return immediately if all data has been fetched for this type
         if (hasFetchedAll) {
-            // @ts-ignore
             return Object.values(cacheValue);
         }
 
@@ -155,56 +195,48 @@ function createCacheStore() {
             let items = json[pluralName] as T[];
             items = sortData(items, sortColumns);
 
+            items.forEach((item) => {
+                item.state = 'loaded';
+                item.error = false;
+                item.errorMessage = null;
+            });
 
-            cacheValue = Object.fromEntries(
-                // @ts-ignore
-                items.map((item: T) => [item['id'], {
-                    data: item,
-                    state: 'loaded',
-                    error: false,
-                    errorMessage: null
-                }])
-            );
-            cache.set(cacheValue);
+            const newCacheValue = Object.fromEntries(items.map((item: T) => [item.id, item]));
+            cache.set(newCacheValue);
 
             // Mark this data as having been fetched
             typeRegistry.hasFetchedAll = true;
+            cacheValue = newCacheValue;
         } catch (error) {
             let errorMessage = 'An unknown error occurred';
             if (isErrorWithMessage(error)) {
                 errorMessage = error.message;
             }
 
-            cache.set(Object.fromEntries(
-                // @ts-ignore
-                Object.keys(cacheValue).map(id => [id, {
-                    // @ts-ignore
-                    ...cacheValue[id],
-                    state: 'error',
-                    error: true,
-                    errorMessage
-                }])
-            ));
+            cache.update((current: any) => {
+                const updated = { ...current };
+                Object.keys(updated).forEach((id) => {
+                    updated[id].state = 'error';
+                    updated[id].error = true;
+                    updated[id].errorMessage = errorMessage;
+                });
+                return updated;
+            });
             console.error('Failed to fetch all:', errorMessage);
         }
 
-        // @ts-ignore
         return Object.values(cacheValue);
     }
 
     /**
-     * Handle side-loading of data. If the data contains any side-loaded data, it will be added to the cache if it is not
-     * already present, given that the side-loaded data is registered in the cache registry.
-     *
+     * Handle side-loading of data.
      * @param mainSingularKey
      * @param mainPluralKey
      * @param data
      */
     function handleSideLoading(mainSingularKey: string, mainPluralKey: string, data: any) {
         for (let key of Object.keys(data)) {
-            console.log(`checking for sideloading for key: ${key} for mainSingularKey: ${mainSingularKey} and mainPluralKey: ${mainPluralKey}`);
-            console.log(data);
-            //iterate synchronously over values in registry and find the key that matches the pluralName
+            // iterate over registered types to find matching pluralName
             let sideloadKey = null;
             for (let [singularName, registryValue] of registry) {
                 if (registryValue.pluralName === key) {
@@ -213,85 +245,87 @@ function createCacheStore() {
                 }
             }
 
-            console.log('found sideloadKey:', sideloadKey);
-
             if (key !== mainSingularKey && key !== mainPluralKey && sideloadKey !== null) {
-                // @ts-ignore
-                const { cache } = registry.get(sideloadKey);
+                const registryEntry = registry.get(sideloadKey)!;
+                const cache = registryEntry.cache;
                 let sideLoadedData = data[key];
 
-                // Check if sideLoadedData exists and is an array
                 if (Array.isArray(sideLoadedData)) {
+                    sideLoadedData.forEach((item: CacheItem) => {
+                        item.state = 'loaded';
+                        item.error = false;
+                        item.errorMessage = null;
+                    });
+
                     let sideLoadedCache = Object.fromEntries(
-                        sideLoadedData.map((item: any) => [item['id'], {
-                            data: item,
-                            state: 'loaded',
-                            error: false,
-                            errorMessage: null
-                        }])
+                        sideLoadedData.map((item: CacheItem) => [item.id, item])
                     );
 
-                    // Update the cache for the side-loaded data type
                     cache.update((current: any) => ({ ...current, ...sideLoadedCache }));
-                    console.log(`Side-loaded data '${key}' has been loaded.`);
-                    console.log(cache);
                 } else {
-                    console.warn(`Expected an array for side-loaded data '${key}', but received`, sideLoadedData);
+                    console.warn(
+                        `Expected an array for side-loaded data '${key}', but received`,
+                        sideLoadedData
+                    );
                 }
             }
         }
     }
 
     /**
-     * Reload an item by its ID. The item will be re-fetched from the API via the provided apiPrefix, even if it is already
-     * in the cache. The re-fetched item will replace the existing item in the cache.
+     * Reload an item by its ID. This function first removes the item from the cache and then fetches it from the
+     * backend via fetchById.
      * @param singularName
      * @param id
      */
-    async function reloadById<T>(singularName: string, id: string): Promise<CacheItem<T>> {
-        const typeRegistry : CacheRegistry | undefined = registry.get(singularName);
-        if (!typeRegistry) throw new Error(`Type ${singularName} is not registered in the cache store.`);
+    async function reloadById<T extends CacheItem>(singularName: string, id: string): Promise<T> {
+        const typeRegistry = registry.get(singularName) as CacheRegistry<T>;
+        if (!typeRegistry)
+            throw new Error(`Type ${singularName} is not registered in the cache store.`);
 
         const { cache } = typeRegistry;
-        cache.update((current: { [x: string]: any; }) => {
+        cache.update((current: { [x: string]: any }) => {
             const { [id]: _, ...rest } = current;
             return rest;
         });
-        return await fetchById(singularName, id);
+        return await fetchById<T>(singularName, id);
     }
 
     /**
-     * Reload all items of a specific type. The items will be re-fetched from the API via the provided apiPrefix, even if
-     * they are already in the cache. The re-fetched items will replace the existing items in the cache.
-     *
+     * Reload all items of a specific type. This function first invalidates the cache for the type and then fetches all
+     * items from the backend via fetchAll.
      * @param singularName
      * @param sortColumns
      */
-    async function reloadAll<T>(singularName: string, sortColumns?: SortColumn[]): Promise<CacheItem<T>[]> {
-        const typeRegistry : CacheRegistry | undefined = registry.get(singularName);
-        if (!typeRegistry) throw new Error(`Type ${singularName} is not registered in the cache store.`);
+    async function reloadAll<T extends CacheItem>(
+        singularName: string,
+        sortColumns?: SortColumn[]
+    ): Promise<T[]> {
+        const typeRegistry = registry.get(singularName) as CacheRegistry<T>;
+        if (!typeRegistry)
+            throw new Error(`Type ${singularName} is not registered in the cache store.`);
 
         const { cache } = typeRegistry;
-        cache.set({});  // Invalidate all cache
+        cache.set({}); // Invalidate all cache
 
         // Reset the hasFetchedAll flag before re-fetching
         typeRegistry.hasFetchedAll = false;
 
-        return await fetchAll(singularName, sortColumns);
+        return await fetchAll<T>(singularName, sortColumns);
     }
 
     /**
-     * Create a new item. The item will be created via the API using the provided apiPrefix. The created item will be
-     * added to the cache.
-     *
+     * Create a new item. The item must be of a type that has been registered in the cache store, and the type
+     * needs to extend the CacheItem interface.
      * @param singularName
      * @param item
      */
-    async function create<T>(singularName: string, item: T): Promise<void> {
-        const typeRegistry : CacheRegistry | undefined = registry.get(singularName);
-        if (!typeRegistry) throw new Error(`Type ${singularName} is not registered in the cache store.`);
+    async function create<T extends CacheItem>(singularName: string, item: T): Promise<void> {
+        const typeRegistry = registry.get(singularName) as CacheRegistry<T>;
+        if (!typeRegistry)
+            throw new Error(`Type ${singularName} is not registered in the cache store.`);
 
-        const { cache,  pluralName, apiPrefix } = typeRegistry;
+        const { cache, pluralName, apiPrefix } = typeRegistry;
 
         try {
             const response = await fetch(`${apiPrefix}/${pluralName}`, {
@@ -305,9 +339,14 @@ function createCacheStore() {
             const json = await response.json();
             handleSideLoading(singularName, pluralName, json);
 
+            const newItem = json[singularName] as T;
+            newItem.state = 'loaded';
+            newItem.error = false;
+            newItem.errorMessage = null;
+
             cache.update((current: any) => ({
                 ...current,
-                [json[singularName].id]: { data: json[singularName], state: 'loaded', error: false, errorMessage: null }
+                [newItem.id]: newItem,
             }));
         } catch (error) {
             let errorMessage = 'An unknown error occurred';
@@ -319,19 +358,19 @@ function createCacheStore() {
     }
 
     /**
-     * Update an item by its ID. The item will be updated via the API using the provided apiPrefix. The updated item will
-     * be added to the cache.
+     * Update an item by its ID.
      * @param singularName
      * @param id
      * @param item
      */
-    async function update<T>(singularName: string, id: string, item: Partial<T>): Promise<void> {
-        const typeRegistry : CacheRegistry | undefined = registry.get(singularName);
-        if (!typeRegistry) throw new Error(`Type ${singularName} is not registered in the cache store.`);
+    async function update<T extends CacheItem>(singularName: string, id: string, item: Partial<T>): Promise<void> {
+        const typeRegistry = registry.get(singularName) as CacheRegistry<T>;
+        if (!typeRegistry)
+            throw new Error(`Type ${singularName} is not registered in the cache store.`);
 
         const { cache, pluralName, apiPrefix } = typeRegistry;
 
-        cache.update((current: { [x: string]: any; }) => ({
+        cache.update((current: { [x: string]: T }) => ({
             ...current,
             [id]: { ...current[id], state: 'updating', error: false, errorMessage: null },
         }));
@@ -348,37 +387,41 @@ function createCacheStore() {
             const json = await response.json();
             handleSideLoading(singularName, pluralName, json);
 
+            const updatedItem = json[singularName] as T;
+            updatedItem.state = 'loaded';
+            updatedItem.error = false;
+            updatedItem.errorMessage = null;
+
             cache.update((current: any) => ({
                 ...current,
-                [json[singularName].id]: { data: json[singularName], state: 'loaded', error: false, errorMessage: null }
+                [updatedItem.id]: updatedItem,
             }));
         } catch (error) {
             let errorMessage = 'An unknown error occurred';
             if (isErrorWithMessage(error)) {
                 errorMessage = error.message;
             }
-            cache.update((current: { [x: string]: any; }) => ({
+            cache.update((current: { [x: string]: T }) => ({
                 ...current,
-                [id]: { ...current[id], state: 'error', error: true, errorMessage }
+                [id]: { ...current[id], state: 'error', error: true, errorMessage },
             }));
             console.error(`Failed to update ${id}:`, errorMessage);
         }
     }
 
     /**
-     * Remove an item by its ID. The item will be removed via the API using the provided apiPrefix. The item will be
-     * removed from the cache.
-     *
+     * Remove an item by its ID.
      * @param singularName
      * @param id
      */
-    async function remove<T>(singularName: string, id: string): Promise<void> {
-        const typeRegistry : CacheRegistry | undefined = registry.get(singularName);
-        if (!typeRegistry) throw new Error(`Type ${singularName} is not registered in the cache store.`);
+    async function remove<T extends CacheItem>(singularName: string, id: string): Promise<void> {
+        const typeRegistry = registry.get(singularName) as CacheRegistry<T>;
+        if (!typeRegistry)
+            throw new Error(`Type ${singularName} is not registered in the cache store.`);
 
         const { cache, pluralName, apiPrefix } = typeRegistry;
 
-        cache.update((current: { [x: string]: any; }) => ({
+        cache.update((current: { [x: string]: T }) => ({
             ...current,
             [id]: { ...current[id], state: 'deleting', error: false, errorMessage: null },
         }));
@@ -390,7 +433,7 @@ function createCacheStore() {
 
             if (!response.ok) throw new Error(`Failed to delete: ${response.statusText}`);
 
-            cache.update((current: { [x: string]: any; }) => {
+            cache.update((current: { [x: string]: T }) => {
                 const { [id]: _, ...rest } = current;
                 return rest;
             });
@@ -399,9 +442,9 @@ function createCacheStore() {
             if (isErrorWithMessage(error)) {
                 errorMessage = error.message;
             }
-            cache.update((current: { [x: string]: any; }) => ({
+            cache.update((current: { [x: string]: T }) => ({
                 ...current,
-                [id]: { ...current[id], state: 'error', error: true, errorMessage }
+                [id]: { ...current[id], state: 'error', error: true, errorMessage },
             }));
             console.error(`Failed to delete ${id}:`, errorMessage);
         }

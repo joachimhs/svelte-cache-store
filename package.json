@@ -1,6 +1,6 @@
 {
   "name": "svelte-cache-store",
-  "version": "0.5.0",
+  "version": "0.5.5",
   "description": "A Svelte store for caching API data compatible with Svelte 4.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -28,6 +28,7 @@
   "author": "Joachim Haagen Skeie",
   "license": "MIT",
   "devDependencies": {
+    "svelte": "^5.0.0-next.260",
     "tsup": "^6.7.0",
     "typescript": "^5.0.0"
   }
