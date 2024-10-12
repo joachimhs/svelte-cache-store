@@ -113,6 +113,100 @@ function createCacheStore() {
         });
     }
 
+    function createLazyLoadingProxy<T extends CacheItem>(singularName: string, item: T): T {
+        return new Proxy(item, {
+            get(target, prop, receiver) {
+                // Always allow access to 'id', 'state', 'error', 'errorMessage', and functions
+                if (
+                    prop === 'id' ||
+                    prop === 'state' ||
+                    prop === 'error' ||
+                    prop === 'errorMessage' ||
+                    typeof prop === 'symbol' ||
+                    typeof target[prop as keyof T] === 'function'
+                ) {
+                    return Reflect.get(target, prop, receiver);
+                }
+
+                // If the full data is already loaded, return the property
+                if (target.state === 'loaded') {
+                    return Reflect.get(target, prop, receiver);
+                }
+
+                // Trigger the fetch and update the target when complete
+                if (target.state !== 'loading') {
+                    target.state = 'loading';
+                    cacheStore.fetchById<T>(singularName, target.id).then((fullData) => {
+                        Object.assign(target, fullData);
+                        target.state = 'loaded';
+                    }).catch((error) => {
+                        target.state = 'error';
+                        target.error = true;
+                        target.errorMessage = error.message || 'An unknown error occurred';
+                    });
+                }
+
+                // Return undefined or a placeholder value until the data is loaded
+                return undefined;
+            },
+        });
+    }
+
+    function wrapRelatedPropertiesWithProxies<T extends CacheItem>(item: T) {
+        return; //Not Yet Implemented
+        /*
+            for (const key of Object.keys(item)) {
+
+            const value = (item as any)[key];
+
+            if (value == null) continue;
+
+            // Check if the key corresponds to a registered type (singular or plural)
+            let relatedSingularName = key;
+            let relatedPluralName = key;
+
+            const singularRegistryEntry = registry.get(relatedSingularName);
+            const pluralRegistryEntry = Array.from(registry.values()).find(
+                (entry) => entry.pluralName === relatedPluralName
+            );
+
+            if (singularRegistryEntry || pluralRegistryEntry) {
+                if (Array.isArray(value)) {
+                    // Handle arrays if needed (not shown for brevity)
+                } else {
+                    // It's a one-to-one relationship
+                    if (singularRegistryEntry) {
+                        relatedSingularName = singularRegistryEntry.singularName;
+
+                        let relatedItem: CacheItem;
+
+                        if (typeof value === 'string' || typeof value === 'number') {
+                            // Value is an ID
+                            relatedItem = {
+                                id: value.toString(),
+                                state: 'loading',
+                                error: false,
+                                errorMessage: null,
+                            };
+                        } else if ('id' in value) {
+                            // Value is an object with an ID
+                            relatedItem = value;
+                        } else {
+                            // Skip if we can't determine the ID
+                            continue;
+                        }
+
+                        // Wrap the Proxy in a Svelte store
+                        (item as any)[key] = writable(
+                            createLazyLoadingProxy(relatedSingularName, relatedItem)
+                        );
+                    }
+                }
+            }
+        }
+         */
+    }
+
     /**
      * Fetch an item by its ID.
      * @param singularName
@@ -127,8 +221,18 @@ function createCacheStore() {
 
         let cacheValue = (get(cache) as { [key: string]: T })[id];
 
-        // If the item is not in the cache or is in an error state, fetch it from the backend
-        if (!cacheValue || (cacheValue != null && cacheValue.state === 'error')) {
+        // If the item is in the cache and fully loaded, return it
+        if (cacheValue && cacheValue.state === 'loaded') {
+            return cacheValue;
+        }
+
+        // If the item is in the cache but not fully loaded, return it (it may be in 'loading' or 'error' state)
+        if (cacheValue && (cacheValue.state === 'loading' || cacheValue.state === 'error')) {
+            return cacheValue;
+        }
+
+        // If the item is not in the cache, initialize it with 'loading' state
+        if (!cacheValue) {
             cacheValue = {
                 id,
                 state: 'loading',
@@ -136,36 +240,41 @@ function createCacheStore() {
                 errorMessage: null,
             } as T;
             cache.update((current: any) => ({ ...current, [id]: cacheValue }));
+        }
 
-            try {
-                const response = await fetch(`${apiPrefix}/${pluralName}/${id}`);
-                if (!response.ok) throw new Error(`Failed to fetch: ${response.statusText}`);
+        // Fetch the item from the backend
+        try {
+            const response = await fetch(`${apiPrefix}/${pluralName}/${id}`);
+            if (!response.ok) throw new Error(`Failed to fetch: ${response.statusText}`);
 
-                const json = await response.json();
-                handleSideLoading(singularName, pluralName, json);
+            const json = await response.json();
+            handleSideLoading(singularName, pluralName, json);
 
-                const data = json[singularName] as T;
-                data.state = 'loaded';
-                data.error = false;
-                data.errorMessage = null;
+            const data = json[singularName] as T;
+            data.state = 'loaded';
+            data.error = false;
+            data.errorMessage = null;
 
-                cache.update((current: any) => ({ ...current, [id]: data }));
-                cacheValue = data;
-            } catch (error) {
-                let errorMessage = 'An unknown error occurred';
-                if (isErrorWithMessage(error)) {
-                    errorMessage = error.message;
-                }
-                cache.update((current: any) => ({
-                    ...current,
-                    [id]: { ...cacheValue, state: 'error', error: true, errorMessage },
-                }));
-                console.error(`Failed to fetch ${id}:`, errorMessage);
+            // Handle lazy loading for related properties
+            wrapRelatedPropertiesWithProxies(data);
+
+            cache.update((current: any) => ({ ...current, [id]: data }));
+            cacheValue = data;
+        } catch (error) {
+            let errorMessage = 'An unknown error occurred';
+            if (isErrorWithMessage(error)) {
+                errorMessage = error.message;
             }
+            cache.update((current: any) => ({
+                ...current,
+                [id]: { ...cacheValue, state: 'error', error: true, errorMessage },
+            }));
+            console.error(`Failed to fetch ${id}:`, errorMessage);
         }
 
         return cacheValue;
     }
+
 
     /**
      * Fetch all items of a specific type.
@@ -177,14 +286,15 @@ function createCacheStore() {
         if (!typeRegistry)
             throw new Error(`Type ${singularName} is not registered in the cache store.`);
 
-        const { cache, pluralName, apiPrefix, hasFetchedAll } = typeRegistry;
-        let cacheValue = get(cache) as { [key: string]: T };
+        const { cache, pluralName, apiPrefix } = typeRegistry;
 
-        //Return immediately if all data has been fetched for this type
-        if (hasFetchedAll) {
-            return Object.values(cacheValue);
+        // Check if all data has already been fetched
+        if (typeRegistry.hasFetchedAll) {
+            const cachedItems = Object.values(get(cache) as { [key: string]: T });
+            return sortColumns ? sortData(cachedItems, sortColumns) : cachedItems;
         }
 
+        // Fetch data from the backend
         try {
             const response = await fetch(`${apiPrefix}/${pluralName}`);
             if (!response.ok) throw new Error(`Failed to fetch: ${response.statusText}`);
@@ -193,26 +303,31 @@ function createCacheStore() {
             handleSideLoading(singularName, pluralName, json);
 
             let items = json[pluralName] as T[];
-            items = sortData(items, sortColumns);
-
             items.forEach((item) => {
                 item.state = 'loaded';
                 item.error = false;
                 item.errorMessage = null;
+
+                // Wrap related properties with Proxies
+                wrapRelatedPropertiesWithProxies(item);
             });
 
+            // Update the cache
             const newCacheValue = Object.fromEntries(items.map((item: T) => [item.id, item]));
             cache.set(newCacheValue);
 
-            // Mark this data as having been fetched
+            // Mark as fetched
             typeRegistry.hasFetchedAll = true;
-            cacheValue = newCacheValue;
+
+            // Sort if needed
+            return sortColumns ? sortData(items, sortColumns) : items;
         } catch (error) {
             let errorMessage = 'An unknown error occurred';
             if (isErrorWithMessage(error)) {
                 errorMessage = error.message;
             }
 
+            // Update cache items to reflect the error
             cache.update((current: any) => {
                 const updated = { ...current };
                 Object.keys(updated).forEach((id) => {
@@ -223,10 +338,10 @@ function createCacheStore() {
                 return updated;
             });
             console.error('Failed to fetch all:', errorMessage);
+            throw new Error(errorMessage);
         }
-
-        return Object.values(cacheValue);
     }
+
 
     /**
      * Handle side-loading of data.
@@ -344,6 +459,10 @@ function createCacheStore() {
             newItem.error = false;
             newItem.errorMessage = null;
 
+            // Wrap related properties with Proxies
+            wrapRelatedPropertiesWithProxies(newItem);
+
+            // Update the cache
             cache.update((current: any) => ({
                 ...current,
                 [newItem.id]: newItem,
@@ -354,8 +473,10 @@ function createCacheStore() {
                 errorMessage = error.message;
             }
             console.error('Failed to create item:', errorMessage);
+            throw new Error(errorMessage);
         }
     }
+
 
     /**
      * Update an item by its ID.
@@ -370,6 +491,7 @@ function createCacheStore() {
 
         const { cache, pluralName, apiPrefix } = typeRegistry;
 
+        // Update cache to reflect the updating state
         cache.update((current: { [x: string]: T }) => ({
             ...current,
             [id]: { ...current[id], state: 'updating', error: false, errorMessage: null },
@@ -377,37 +499,47 @@ function createCacheStore() {
 
         try {
             const response = await fetch(`${apiPrefix}/${pluralName}/${id}`, {
-                method: 'PATCH',
+                method: 'PUT', // or 'PATCH' depending on your API
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ [singularName]: item }),
             });
 
             if (!response.ok) throw new Error(`Failed to update: ${response.statusText}`);
 
-            const json = await response.json();
-            handleSideLoading(singularName, pluralName, json);
+            if (response.bodyUsed) {
+                const json = await response.json();
+                handleSideLoading(singularName, pluralName, json);
 
-            const updatedItem = json[singularName] as T;
-            updatedItem.state = 'loaded';
-            updatedItem.error = false;
-            updatedItem.errorMessage = null;
+                const updatedItem = json[singularName] as T;
+                updatedItem.state = 'loaded';
+                updatedItem.error = false;
+                updatedItem.errorMessage = null;
 
-            cache.update((current: any) => ({
-                ...current,
-                [updatedItem.id]: updatedItem,
-            }));
+                // Wrap related properties with Proxies
+                wrapRelatedPropertiesWithProxies(updatedItem);
+
+                // Update the cache
+                cache.update((current: any) => ({
+                    ...current,
+                    [updatedItem.id]: updatedItem,
+                }));
+            }
         } catch (error) {
             let errorMessage = 'An unknown error occurred';
             if (isErrorWithMessage(error)) {
                 errorMessage = error.message;
             }
+
+            // Update cache to reflect the error state
             cache.update((current: { [x: string]: T }) => ({
                 ...current,
                 [id]: { ...current[id], state: 'error', error: true, errorMessage },
             }));
             console.error(`Failed to update ${id}:`, errorMessage);
+            throw new Error(errorMessage);
         }
     }
+
 
     /**
      * Remove an item by its ID.
@@ -421,6 +553,7 @@ function createCacheStore() {
 
         const { cache, pluralName, apiPrefix } = typeRegistry;
 
+        // Update cache to reflect the deleting state
         cache.update((current: { [x: string]: T }) => ({
             ...current,
             [id]: { ...current[id], state: 'deleting', error: false, errorMessage: null },
@@ -433,6 +566,7 @@ function createCacheStore() {
 
             if (!response.ok) throw new Error(`Failed to delete: ${response.statusText}`);
 
+            // Remove the item from the cache
             cache.update((current: { [x: string]: T }) => {
                 const { [id]: _, ...rest } = current;
                 return rest;
@@ -442,13 +576,17 @@ function createCacheStore() {
             if (isErrorWithMessage(error)) {
                 errorMessage = error.message;
             }
+
+            // Update cache to reflect the error state
             cache.update((current: { [x: string]: T }) => ({
                 ...current,
                 [id]: { ...current[id], state: 'error', error: true, errorMessage },
             }));
             console.error(`Failed to delete ${id}:`, errorMessage);
+            throw new Error(errorMessage);
         }
     }
+
 
     return {
         registerType,

@@ -223,7 +223,8 @@ To fetch, create, update and delete data, this is normally done in the page-comp
 <script>
     import {cacheStore} from "svelte-cache-store";
     import {onMount} from "svelte";
-
+    import type {BlogPost} from "$lib/models/BlogPost";
+    
     let blogPosts : BlogPost[] = [];
     onMount(async () => {
         // Fetch all blog posts, sorted by 'createdDate' in descending order

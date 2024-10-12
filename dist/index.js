@@ -149,13 +149,46 @@ function createCacheStore() {
       return 0;
     });
   }
+  function createLazyLoadingProxy(singularName, item) {
+    return new Proxy(item, {
+      get(target, prop, receiver) {
+        if (prop === "id" || prop === "state" || prop === "error" || prop === "errorMessage" || typeof prop === "symbol" || typeof target[prop] === "function") {
+          return Reflect.get(target, prop, receiver);
+        }
+        if (target.state === "loaded") {
+          return Reflect.get(target, prop, receiver);
+        }
+        if (target.state !== "loading") {
+          target.state = "loading";
+          cacheStore.fetchById(singularName, target.id).then((fullData) => {
+            Object.assign(target, fullData);
+            target.state = "loaded";
+          }).catch((error) => {
+            target.state = "error";
+            target.error = true;
+            target.errorMessage = error.message || "An unknown error occurred";
+          });
+        }
+        return void 0;
+      }
+    });
+  }
+  function wrapRelatedPropertiesWithProxies(item) {
+    return;
+  }
   async function fetchById(singularName, id) {
     const typeRegistry = registry.get(singularName);
     if (!typeRegistry)
       throw new Error(`Type ${singularName} is not registered in the cache store.`);
     const { cache, pluralName, apiPrefix } = typeRegistry;
     let cacheValue = get(cache)[id];
-    if (!cacheValue || cacheValue != null && cacheValue.state === "error") {
+    if (cacheValue && cacheValue.state === "loaded") {
+      return cacheValue;
+    }
+    if (cacheValue && (cacheValue.state === "loading" || cacheValue.state === "error")) {
+      return cacheValue;
+    }
+    if (!cacheValue) {
       cacheValue = {
         id,
         state: "loading",
@@ -163,29 +196,30 @@ function createCacheStore() {
         errorMessage: null
       };
       cache.update((current) => ({ ...current, [id]: cacheValue }));
-      try {
-        const response = await fetch(`${apiPrefix}/${pluralName}/${id}`);
-        if (!response.ok)
-          throw new Error(`Failed to fetch: ${response.statusText}`);
-        const json = await response.json();
-        handleSideLoading(singularName, pluralName, json);
-        const data = json[singularName];
-        data.state = "loaded";
-        data.error = false;
-        data.errorMessage = null;
-        cache.update((current) => ({ ...current, [id]: data }));
-        cacheValue = data;
-      } catch (error) {
-        let errorMessage = "An unknown error occurred";
-        if (isErrorWithMessage(error)) {
-          errorMessage = error.message;
-        }
-        cache.update((current) => ({
-          ...current,
-          [id]: { ...cacheValue, state: "error", error: true, errorMessage }
-        }));
-        console.error(`Failed to fetch ${id}:`, errorMessage);
+    }
+    try {
+      const response = await fetch(`${apiPrefix}/${pluralName}/${id}`);
+      if (!response.ok)
+        throw new Error(`Failed to fetch: ${response.statusText}`);
+      const json = await response.json();
+      handleSideLoading(singularName, pluralName, json);
+      const data = json[singularName];
+      data.state = "loaded";
+      data.error = false;
+      data.errorMessage = null;
+      wrapRelatedPropertiesWithProxies(data);
+      cache.update((current) => ({ ...current, [id]: data }));
+      cacheValue = data;
+    } catch (error) {
+      let errorMessage = "An unknown error occurred";
+      if (isErrorWithMessage(error)) {
+        errorMessage = error.message;
       }
+      cache.update((current) => ({
+        ...current,
+        [id]: { ...cacheValue, state: "error", error: true, errorMessage }
+      }));
+      console.error(`Failed to fetch ${id}:`, errorMessage);
     }
     return cacheValue;
   }
@@ -193,10 +227,10 @@ function createCacheStore() {
     const typeRegistry = registry.get(singularName);
     if (!typeRegistry)
       throw new Error(`Type ${singularName} is not registered in the cache store.`);
-    const { cache, pluralName, apiPrefix, hasFetchedAll } = typeRegistry;
-    let cacheValue = get(cache);
-    if (hasFetchedAll) {
-      return Object.values(cacheValue);
+    const { cache, pluralName, apiPrefix } = typeRegistry;
+    if (typeRegistry.hasFetchedAll) {
+      const cachedItems = Object.values(get(cache));
+      return sortColumns ? sortData(cachedItems, sortColumns) : cachedItems;
     }
     try {
       const response = await fetch(`${apiPrefix}/${pluralName}`);
@@ -205,16 +239,16 @@ function createCacheStore() {
       const json = await response.json();
       handleSideLoading(singularName, pluralName, json);
       let items = json[pluralName];
-      items = sortData(items, sortColumns);
       items.forEach((item) => {
         item.state = "loaded";
         item.error = false;
         item.errorMessage = null;
+        wrapRelatedPropertiesWithProxies(item);
       });
       const newCacheValue = Object.fromEntries(items.map((item) => [item.id, item]));
       cache.set(newCacheValue);
       typeRegistry.hasFetchedAll = true;
-      cacheValue = newCacheValue;
+      return sortColumns ? sortData(items, sortColumns) : items;
     } catch (error) {
       let errorMessage = "An unknown error occurred";
       if (isErrorWithMessage(error)) {
@@ -230,8 +264,8 @@ function createCacheStore() {
         return updated;
       });
       console.error("Failed to fetch all:", errorMessage);
+      throw new Error(errorMessage);
     }
-    return Object.values(cacheValue);
   }
   function handleSideLoading(mainSingularKey, mainPluralKey, data) {
     for (let key of Object.keys(data)) {
@@ -304,6 +338,7 @@ function createCacheStore() {
       newItem.state = "loaded";
       newItem.error = false;
       newItem.errorMessage = null;
+      wrapRelatedPropertiesWithProxies(newItem);
       cache.update((current) => ({
         ...current,
         [newItem.id]: newItem
@@ -314,6 +349,7 @@ function createCacheStore() {
         errorMessage = error.message;
       }
       console.error("Failed to create item:", errorMessage);
+      throw new Error(errorMessage);
     }
   }
   async function update(singularName, id, item) {
@@ -327,22 +363,26 @@ function createCacheStore() {
     }));
     try {
       const response = await fetch(`${apiPrefix}/${pluralName}/${id}`, {
-        method: "PATCH",
+        method: "PUT",
+        // or 'PATCH' depending on your API
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ [singularName]: item })
       });
       if (!response.ok)
         throw new Error(`Failed to update: ${response.statusText}`);
-      const json = await response.json();
-      handleSideLoading(singularName, pluralName, json);
-      const updatedItem = json[singularName];
-      updatedItem.state = "loaded";
-      updatedItem.error = false;
-      updatedItem.errorMessage = null;
-      cache.update((current) => ({
-        ...current,
-        [updatedItem.id]: updatedItem
-      }));
+      if (response.bodyUsed) {
+        const json = await response.json();
+        handleSideLoading(singularName, pluralName, json);
+        const updatedItem = json[singularName];
+        updatedItem.state = "loaded";
+        updatedItem.error = false;
+        updatedItem.errorMessage = null;
+        wrapRelatedPropertiesWithProxies(updatedItem);
+        cache.update((current) => ({
+          ...current,
+          [updatedItem.id]: updatedItem
+        }));
+      }
     } catch (error) {
       let errorMessage = "An unknown error occurred";
       if (isErrorWithMessage(error)) {
@@ -353,6 +393,7 @@ function createCacheStore() {
         [id]: { ...current[id], state: "error", error: true, errorMessage }
       }));
       console.error(`Failed to update ${id}:`, errorMessage);
+      throw new Error(errorMessage);
     }
   }
   async function remove(singularName, id) {
@@ -384,6 +425,7 @@ function createCacheStore() {
         [id]: { ...current[id], state: "error", error: true, errorMessage }
       }));
       console.error(`Failed to delete ${id}:`, errorMessage);
+      throw new Error(errorMessage);
     }
   }
   return {
